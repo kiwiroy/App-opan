@@ -147,10 +147,38 @@ ok(
   'Added dist copied into custom'
 );
 
+my $index = [
+  [ 'M', '1.000001', 'M/MY/MY/M-1.000001.tar.gz' ]
+];
+
+SKIP: {
+  skip "skipping online test" => 2 unless $ENV{TEST_ONLINE} && $ENV{GITHUB_PAT};
+  # online test
+  run(add => 'kiwiroy/app-opan-fixture@0.1001');
+
+  ok(
+    -f $tempdir.'/pans/custom/dists/M/MY/MY/App-opan-Fixture-0.1001.tar.gz',
+    'Added dist (github) copied into custom'
+    );
+  unshift @$index, [ 'App::opan::Fixture', '0.1001', 'M/MY/MY/App-opan-Fixture-0.1001.tar.gz' ];
+}
+
+SKIP: {
+  skip "skipping online test" => 2 unless $ENV{TEST_ONLINE};
+  # online test
+  run(add => "http://backpan.perl.org/authors/id/S/SR/SRI/Bundle-Catalyst-0.01.tar.gz");
+
+  ok(
+    -f $tempdir.'/pans/custom/dists/M/MY/MY/Bundle-Catalyst-0.01.tar.gz',
+    'Added dist (github) copied into custom'
+    );
+  splice @$index, 1, 0, ['Bundle::Catalyst', '0.01', 'M/MY/MY/Bundle-Catalyst-0.01.tar.gz'];
+}
+
 is_deeply(
   entries_for('custom'),
-  [ [ 'M', '1.000001', 'M/MY/MY/M-1.000001.tar.gz' ] ],
-  'Custom dist indexed'
+  $index,
+  'Custom dist(s) indexed'
 );
 
 run(unpin => 'AAAAAAAAA-1.00.tar.gz');

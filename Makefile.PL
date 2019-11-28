@@ -23,5 +23,6 @@ WriteMakefile(
     'Test::More' => '0.88',
     'File::chdir' => '0.1010',
     'Capture::Tiny' => '0.27',
+    'IO::Socket::SSL' => '2.009',
   },
 );

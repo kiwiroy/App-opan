@@ -11,7 +11,8 @@ use File::Open qw(fopen);
 use List::UtilsBy qw(sort_by);
 use IPC::System::Simple qw(capture);
 use Mojo::Util qw(monkey_patch);
-use Mojo::File qw(path);
+use Mojo::File qw(path tempdir);
+use Mojo::URL;
 use Import::Into;
 
 our %TOKENS = map { $_=>1 } split/:/, $ENV{OPAN_AUTH_TOKENS} || '';
@@ -125,6 +126,111 @@ sub remove_dist_from_index {
   );
 }
 
+sub _github_auth_header {
+  my ($ua, $tx, $pat, $accept) = @_;
+
+  # No GITHUB_PAT - no auth header
+  return unless $pat;
+  my $req = $tx->req;
+
+  # Not a GitHub URL - no auth header
+  return unless $req->url->host =~ qr/^api\.github\.com$/;
+  $req->headers->authorization("token $pat")->accept_encoding('gzip');
+
+  # Accept header only if requested
+  return unless $accept;
+  $req->headers->accept($accept);
+}
+
+sub get_github_release {
+  my ($app, $path_arg) = @_;
+  my ($user, $repo, $tag_or_id) = split qr{[/\@]} => $path_arg;
+  my $data = {
+    temp       => $app->add_temp,
+    tag        => $tag_or_id,
+    release_id => $tag_or_id || 'latest',
+    api_url    => Mojo::URL->new(
+      sprintf 'https://api.github.com/repos/%s/%s/releases' => $user => $repo
+    ),
+  };
+
+  $app->ua->transactor->add_generator(github => \&_github_auth_header);
+
+  Mojo::IOLoop->delay(
+
+    # get a single release or all
+    sub {
+      my ($delay, $data, $ua) = (shift, shift, shift);
+      my $url = $data->{api_url}->clone;
+      if ( $data->{release_id} eq 'latest'
+        || $data->{release_id} =~ qr/^[0-9]+$/)
+      {
+        $url->path->trailing_slash(1)->merge($data->{release_id});
+      }
+      $data->{release_id} = undef;
+      $ua->get(
+        $url => github => $ENV{GITHUB_PAT} => $delay->pass($data)->begin(0));
+      return;
+    },
+
+    # decode response
+    sub {
+      my ($delay, $data, $ua, $tx) = (shift, shift, shift, shift);
+      return $delay->reject("HTTP code " . $tx->res->code) unless $tx->res->is_success;
+      my $json = $tx->res->json;
+      my ($release) = ref($json) eq 'HASH'
+        ? $json
+        : grep { $_->{tag_name} eq $data->{tag} } @$json;
+      return $delay->reject('No release found', $data->{tag}) unless $release;
+      $data->{release_id} = $release->{id};
+      $delay->pass($data, $ua, $release);
+    },
+
+    # get asset
+    sub {
+      my ($delay, $data, $ua, $release) = (shift, shift, shift, shift);
+      $delay->reject('No releaseID') unless $data->{release_id};
+      my ($dist)
+        = grep { $_->{content_type} eq 'application/x-gzip' }
+        @{$release->{assets}};
+      return $delay->reject('No assets') unless $dist;
+      $ua->max_redirects(2)
+        ->get($dist->{url} => github => $ENV{GITHUB_PAT} =>
+          'application/octet-stream' => $delay->pass($data)->begin(0));
+    },
+
+    # write to disk
+    sub {
+      my ($delay, $data, $ua, $tx) = (shift, shift, shift, shift);
+      return $delay->reject("HTTP code " . $tx->res->code) unless $tx->res->is_success;
+      return $delay->reject('No Content-Disposition header')
+        unless $tx->res->headers->content_disposition;
+      my (undef, undef, $filename)
+        = split /[;=]/ => $tx->res->headers->content_disposition;
+      my $path = $data->{path} = $data->{temp}->child($filename);
+      $tx->result->save_to($path);
+      return $delay->reject("Failed to write to $path") unless -e $path;
+    }
+  )->pass($data, $app->ua)->catch(sub {
+    $data->{path} = path($user, $repo);
+    warn "Fetch $path_arg failed: @_\n";
+    warn "export GITHUB_PAT=... see https://github.com/settings/tokens\n" unless $ENV{GITHUB_PAT};
+  })->wait;
+
+  return $data->{path};
+}
+
+sub get_release {
+  my ($app, $path_arg) = @_;
+  my $path = path($path_arg);
+  return $path if -e $path;
+  my $url = Mojo::URL->new($path_arg);
+  return get_github_release($app, $path_arg) unless $url->scheme;
+  $path = $app->add_temp->child($path->basename);
+  $app->ua->get($url)->result->save_to($path);
+  return $path;
+}
+
 my @pan_names = qw(upstream custom pinset combined nopin);
 
 sub do_init {
@@ -168,7 +274,8 @@ sub do_pull {
 
 sub do_add {
   my ($app, $path_arg) = @_;
-  my $path = path($path_arg);
+  my $path = get_release($app, $path_arg);
+  return unless -e $path;
   my $pan_dir = path('pans/custom/dists/M/MY/MY')->make_path;
   $path->copy_to(my $pan_path = $pan_dir->child($path->basename))
     or die "Failed to copy ${path} into custom pan: $!";
@@ -294,6 +401,8 @@ post "/upload" => sub {
 push(@{app->commands->namespaces}, 'App::opan::Command');
 
 helper cpan_url => sub { $ENV{OPAN_MIRROR} || 'http://www.cpan.org/' };
+
+helper add_temp => sub { state $tmp = tempdir(opan_temp_XXXXX => CLEANUP => 1) };
 
 my $nopin_static = Mojolicious::Static->new(
   paths => [ 'pans/custom/dists' ]
@@ -470,7 +579,8 @@ Fetches 02packages from www.cpan.org into the L</upstream> PAN.
   opan add Dist-Name-1.23.tar.gz
 
 Imports a distribution file into the L</custom> PAN under author C<MY>. Any
-path parts provided before the filename will be stripped.
+path parts provided before the filename will be stripped. The path may optionally be
+either a URL to an artefact or a C<user/repo@tag> for a GitHub repository.
 
 Support for other authors is pending somebody explaining why that would have
 a point. See L</pin> for the command you probably wanted instead.
