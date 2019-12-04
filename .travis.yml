@@ -1,0 +1,22 @@
+language: perl
+
+os: linux
+dist: xenial
+
+jobs:
+  include:
+  - perl: "5.30"
+  - perl: "5.26"
+  - perl: "5.16"
+    dist: trusty
+
+env:
+  global:
+  - PERL_USE_UNSAFE_INC=1
+  - CARTON=carton
+
+before_install:
+  - git clone https://github.com/p5sagit/Distar.git Distar
+  - if [ "$PERLBREW_PERL" == "5.16" ]; then CARTON=carton-5.16; fi
+  - curl -Lo /home/travis/perl5/perlbrew/bin/carton https://gist.githubusercontent.com/kiwiroy/dd139f99365bd2c6ddff3665e01dedbb/raw/75383fbf3f3ed1e08f0322e31a1e78d6130d3093/$CARTON
+  - chmod 755 /home/travis/perl5/perlbrew/bin/carton
