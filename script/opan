@@ -231,7 +231,7 @@ sub run_with_server {
   my $pid = fork();
   die "fork() fork()ed up: $!" unless defined $pid;
   unless ($pid) {
-    $ENV{OPAN_AUTOPIN} = 1 if $pan eq 'autopin';
+    $app->config->{autopin} = !!($pan eq 'autopin');
     $app->start(daemon => -l => $url);
     exit(0);
   }
@@ -270,7 +270,15 @@ foreach my $cmd (
 
 use Mojolicious::Lite;
 
-Mojo::IOLoop->recurring(600 => sub { do_pull(app); }) if $ENV{OPAN_RECURRING_PULL};
+plugin Config => {
+  default => {
+    autopin         => $ENV{OPAN_AUTOPIN},
+    recurring       => $ENV{OPAN_RECURRING_PULL},
+    upstream_mirror => $ENV{OPAN_MIRROR} || 'http://www.cpan.org/',
+  }
+};
+
+Mojo::IOLoop->recurring(600 => sub { do_pull(app); }) if app->config->{recurring};
 
 post "/upload" => sub {
   my $c = shift;
@@ -293,7 +301,7 @@ post "/upload" => sub {
 
 push(@{app->commands->namespaces}, 'App::opan::Command');
 
-helper cpan_url => sub { $ENV{OPAN_MIRROR} || 'http://www.cpan.org/' };
+helper cpan_url => sub { shift->app->config->{upstream_mirror} };
 
 my $nopin_static = Mojolicious::Static->new(
   paths => [ 'pans/custom/dists' ]
@@ -346,19 +354,19 @@ get '/nopin/authors/id/*path' => sub {
 
 get "/autopin/modules/02packages.details.txt" => sub {
   return $_[0]->render(text => 'Autopin off', status => 404)
-    unless $ENV{OPAN_AUTOPIN};
+    unless $_[0]->app->config->{autopin};
   $base_static->dispatch($_[0]->stash(path => "nopin/index"));
 };
 
 get "/autopin/modules/02packages.details.txt.gz" => sub {
   return $_[0]->render(text => 'Autopin off', status => 404)
-    unless $ENV{OPAN_AUTOPIN};
+    unless $_[0]->app->config->{autopin};
   $base_static->dispatch($_[0]->stash(path => "nopin/index.gz"));
 };
 
 get '/autopin/authors/id/*path' => sub {
   return $_[0]->render(text => 'Autopin off', status => 404)
-    unless $ENV{OPAN_AUTOPIN};
+    unless $_[0]->app->config->{autopin};
   return if $nopin_static->dispatch($_[0]);
   return if eval {
     do_pin(app, $_[0]->stash->{path});
