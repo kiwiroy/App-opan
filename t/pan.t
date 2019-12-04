@@ -4,6 +4,7 @@ use File::chdir;
 use File::Temp qw(tempdir);
 use Capture::Tiny qw(capture);
 use IPC::System::Simple ();
+use Mojo::Server;
 use Mojo::File qw(path); sub slurp { path($_[0])->slurp }
 use Import::Into;
 
@@ -22,7 +23,11 @@ sub App::opan::gmtime { 'TIME GOES HERE' }
 
 subs->import::into('App::opan', 'gmtime');
 
-my $app = require "./script/opan";
+my $app;
+{
+  local $ENV{OPAN_MIRROR} = '/fakepan/';
+  $app = Mojo::Server->new->load_app("$test_cwd/script/opan");
+}
 
 sub run {
   local $CWD = $tempdir;
@@ -181,7 +186,7 @@ ok(
 );
 
 {
-  local $ENV{OPAN_AUTOPIN} = 1;
+  local $app->config->{autopin} = local $ENV{OPAN_AUTOPIN} = 1;
   is(
     run(get => '/autopin/modules/02packages.details.txt'),
     run(get => '/nopin/modules/02packages.details.txt'),
